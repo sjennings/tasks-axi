@@ -175,3 +175,105 @@ describe("resolveConfig", () => {
     },
   );
 });
+
+describe("[beads] config", () => {
+  it("parses binary, path, and prefix from the [beads] table", () => {
+    const cfg = parseConfigToml(
+      [
+        'backend = "beads"',
+        "[beads]",
+        'binary = "bd"',
+        'path = "graph/.beads" # the workspace',
+        'prefix = "fm"',
+        "[markdown]",
+        'path = "data/backlog.md"',
+      ].join("\n"),
+    );
+    expect(cfg.backend).toBe("beads");
+    expect(cfg.beads).toEqual({
+      binary: "bd",
+      path: "graph/.beads",
+      prefix: "fm",
+    });
+    expect(cfg.markdown?.path).toBe("data/backlog.md");
+  });
+
+  it("resolves a relative project path against the backlog root", () => {
+    writeFileSync(
+      join(dir, ".tasks.toml"),
+      'backend = "beads"\n[beads]\npath = "graph/.beads"\nprefix = "fm-"\n',
+    );
+    const cfg = resolveConfig({ cwd: dir, home, env: {} });
+    expect(cfg.backend).toBe("beads");
+    expect(cfg.beads).toEqual({
+      binary: "bd",
+      path: join(dir, "graph/.beads"),
+      prefix: "fm",
+    });
+  });
+
+  it("falls back key by key to the user-level table, resolving against its dir", () => {
+    mkdirSync(join(home, ".tasks-axi"), { recursive: true });
+    writeFileSync(
+      join(home, ".tasks-axi", "config.toml"),
+      'backend = "beads"\n[beads]\npath = "graph/.beads"\nbinary = "tools/bd"\nprefix = "home"\n',
+    );
+    writeFileSync(join(dir, ".tasks.toml"), '[beads]\nprefix = "fm"\n');
+    const cfg = resolveConfig({ cwd: dir, home, env: {} });
+    expect(cfg.beads).toEqual({
+      binary: join(home, ".tasks-axi", "tools/bd"),
+      path: join(home, ".tasks-axi", "graph/.beads"),
+      prefix: "fm",
+    });
+  });
+
+  it("selects beads through every documented layer", () => {
+    expect(
+      resolveConfig({ cwd: dir, home, env: {}, backend: "beads" }).backend,
+    ).toBe("beads");
+    expect(
+      resolveConfig({ cwd: dir, home, env: { TASKS_AXI_BACKEND: "beads" } })
+        .backend,
+    ).toBe("beads");
+    mkdirSync(join(home, ".tasks-axi"), { recursive: true });
+    writeFileSync(
+      join(home, ".tasks-axi", "config.toml"),
+      'backend = "beads"\n',
+    );
+    expect(resolveConfig({ cwd: dir, home, env: {} }).backend).toBe("beads");
+    writeFileSync(join(dir, ".tasks.toml"), 'backend = "markdown"\n');
+    expect(resolveConfig({ cwd: dir, home, env: {} }).backend).toBe(
+      "markdown",
+    );
+  });
+
+  it("leaves the workspace to bd's own discovery when no path is set", () => {
+    const cfg = resolveConfig({
+      cwd: dir,
+      home,
+      env: { TASKS_AXI_BACKEND: "beads" },
+    });
+    expect(cfg.beads).toEqual({ binary: "bd" });
+  });
+
+  it("rejects a malformed prefix only when beads is selected", () => {
+    writeFileSync(join(dir, ".tasks.toml"), '[beads]\nprefix = "f m"\n');
+    expect(resolveConfig({ cwd: dir, home, env: {} }).backend).toBe(
+      "markdown",
+    );
+    expect(() =>
+      resolveConfig({ cwd: dir, home, env: { TASKS_AXI_BACKEND: "beads" } }),
+    ).toThrow(/beads\.prefix/);
+  });
+
+  it("records which override named the markdown file", () => {
+    expect(
+      resolveConfig({ cwd: dir, home, env: {}, file: "/abs/x.md" }).fileSource,
+    ).toBe("--file");
+    expect(
+      resolveConfig({ cwd: dir, home, env: { TASKS_AXI_FILE: "/abs/x.md" } })
+        .fileSource,
+    ).toBe("TASKS_AXI_FILE");
+    expect(resolveConfig({ cwd: dir, home, env: {} }).fileSource).toBeUndefined();
+  });
+});

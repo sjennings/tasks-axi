@@ -14,7 +14,7 @@ import {
   publicFollowupsByDeliveryState,
   readyPublicFollowups,
 } from "../derive.js";
-import { AxiError, notFound } from "../errors.js";
+import { AxiError, notFound, unsupported } from "../errors.js";
 import { formatCountLine } from "../format.js";
 import type { Task } from "../model.js";
 import {
@@ -103,6 +103,12 @@ export async function publicFollowupCommand(
   rawArgs: string[],
   context?: TasksContext,
 ): Promise<string> {
+  const { store } = requireCtx(context);
+  // Obligations need an atomic compare-and-swap on their revision, which the
+  // bd CLI cannot express; a backend without it refuses every subcommand.
+  if (!store.capabilities().publicFollowups) {
+    throw unsupported("public-followup", store.capabilities().backend);
+  }
   const [command, ...args] = rawArgs;
   switch (command) {
     case "add":
