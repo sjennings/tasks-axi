@@ -247,15 +247,75 @@ done_keep = 10
 `archive` is optional; when omitted, pruned tasks are appended to `done-archive.md` next to the active backlog.
 Body replacements with `--archive-body` append superseded bodies to `note-archive.md` next to the active backlog.
 
+To select [Beads](https://github.com/gastownhall/beads) instead, set the backend through any of the same layers (`--backend beads`, `TASKS_AXI_BACKEND=beads`, or `backend = "beads"` in either TOML) and describe the workspace in a `[beads]` table:
+
+```toml
+backend = "beads"
+
+[beads]
+binary = "bd"            # default bd
+path = "graph/.beads"    # the workspace bd receives as BEADS_DIR
+prefix = "fm"            # issue id prefix; ids must start with "fm-"
+```
+
+Each `[beads]` key falls back from the project `.tasks.toml` to `~/.tasks-axi/config.toml` on its own.
+A relative `path` (or a relative `binary` path) resolves against the directory holding the TOML that names it, so a project `path` is relative to the backlog root, never to the caller's directory.
+Without `path`, bd discovers the workspace itself (for example from an inherited `BEADS_DIR`).
+`--file` addresses a markdown file, so the beads backend refuses it; `TASKS_AXI_FILE` is a markdown-only default and is ignored there.
+
 ## Backends
 
-P1 ships the **markdown** backend only, behind a narrow `Store` interface so additional backends slot in without touching the CLI layer.
+Backends sit behind a narrow `Store` interface, so each one slots in without touching the CLI layer.
+`blocked`, `ready`, and `held` are derived in the CLI from the task list, so every backend computes them the same way.
 
 | Backend                | Status  |
 | ---------------------- | ------- |
 | markdown               | shipped |
+| beads                  | shipped |
 | sqlite                 | planned |
 | github / jira / linear | planned |
+
+### Beads
+
+The beads backend drives the installed `bd` CLI (developed against bd 1.3.1) and reads only its `--json` output.
+bd runs from the workspace's parent directory with `BEADS_DIR` set to the configured `path`, and the caller's environment passes through, so `BEADS_ACTOR` and per-call bd overrides reach bd unchanged.
+Fields Beads already models use native fields; the rest live in one `metadata.tasks_axi` object, and every other metadata key on an issue is preserved.
+
+| tasks-axi field                             | Beads field                                                                                                                |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `id`                                        | issue id, passed with `--id`; must use the configured `prefix`                                                             |
+| `title`                                     | `title`                                                                                                                    |
+| `body`                                      | `description` (`notes`, `design`, and acceptance criteria are left untouched)                                              |
+| `state` queued                              | `open`, or `deferred` while an active hold applies                                                                         |
+| `state` in_flight                           | `in_progress`                                                                                                              |
+| `state` done                                | `closed`                                                                                                                   |
+| `kind`                                      | `metadata.tasks_axi.kind`; new issues are native type `task`, and a native non-`task` type reads as the kind when unset    |
+| `repo`                                      | `metadata.tasks_axi.repo`                                                                                                  |
+| `priority`                                  | `priority`; an unset tasks-axi priority writes bd's default 2 and records `default_priority` so it reads back unset        |
+| `blocked-by` / `parent` / `discovered-from` | `blocks` / `parent-child` / `discovered-from` dependency edges                                                             |
+| `blocked-by` reason                         | `metadata.tasks_axi.dep_reasons[<blocker id>]`                                                                             |
+| `hold`                                      | `metadata.tasks_axi.hold`, mirrored on queued work as `deferred` (plus `defer_until` for `--until`) so `bd ready` skips it |
+| links (`--pr`, `--report`)                  | `metadata.tasks_axi.links`; the first PR also fills an empty `external_ref`                                                |
+| done evidence                               | `close_reason` (`PR <url>; report <path>`), and `--note` appends to `description`                                          |
+| `created` / `closed`                        | `created_at` / `closed_at` as local dates, or the stamps recorded in `metadata.tasks_axi`                                  |
+| `meta`                                      | `metadata.tasks_axi.meta`                                                                                                  |
+| `--archive-body`                            | the superseded body is added as a bd comment before the replacement                                                        |
+
+Reading maps other statuses too: `blocked` and `pinned` read as queued and `hooked` as in flight, while a custom status follows its configured category.
+A native `deferred` issue with no tasks-axi hold reads as a `future` hold, dated by its `defer_until`.
+
+| Command                                                                                                      | On Beads                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| dashboard, `list`, `show`, `ready`, `add`, `update`, `start`, `reopen`, `hold`, `unhold`, `block`, `unblock` | supported as above                                                                                                         |
+| `done`                                                                                                       | `bd close` with evidence; Beads refuses to close an issue that still has an open blocker, and so does `done`               |
+| `rm`                                                                                                         | `bd delete --force` once no active task depends on it; bd also rewrites text references in other issues                    |
+| `prune`                                                                                                      | refused (`UNSUPPORTED`): Beads keeps closed issues, so `done` skips its auto-prune                                         |
+| `render`                                                                                                     | refused (`UNSUPPORTED`): there is no markdown view to normalize                                                            |
+| `mv`                                                                                                         | refused (`UNSUPPORTED`): a Beads graph is one shared store, and moving out would need a non-atomic copy plus a hard delete |
+| `public-followup`                                                                                            | refused (`UNSUPPORTED`): obligations need an atomic revision compare-and-swap that bd's CLI cannot express                 |
+
+Settings that can vary per workspace: the issue prefix (bd rejects ids outside the workspace prefix), custom statuses and their categories, custom types, and workspace policies such as a required due date.
+tasks-axi never passes `--due`, so a workspace that requires one needs the caller to waive it for that create (Firstmate sets `BD_DUE_REQUIRED=false` on its captain-hold create).
 
 ## Development
 
